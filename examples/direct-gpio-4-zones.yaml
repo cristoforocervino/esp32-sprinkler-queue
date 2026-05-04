@@ -1,0 +1,57 @@
+# ESPHome configuration for a small irrigation setup on a generic ESP32 dev board
+# with a standalone 4-channel relay module wired directly to GPIO pins.
+#
+# Hardware:
+#   - Generic ESP32 dev board (e.g., ESP32-DevKitC, NodeMCU-ESP32)
+#   - 4-channel relay module (the common blue active-LOW boards on Amazon/AliExpress)
+#   - Each relay drives one solenoid valve
+#   - No master valve in this layout
+#
+# Wiring:
+#   GPIO16 -> Relay IN1
+#   GPIO17 -> Relay IN2
+#   GPIO18 -> Relay IN3
+#   GPIO19 -> Relay IN4
+#   ESP 5V -> Relay VCC, ESP GND -> Relay GND
+#
+# Most cheap relay modules with optoisolators are active-LOW: pulling the input
+# to ground energises the coil. Set inverted: true accordingly.
+
+esphome:
+  name: small-sprinkler
+  friendly_name: "Small Sprinkler"
+
+esp32:
+  board: esp32dev
+
+logger:
+api:
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+external_components:
+  - source: github://cristoforocervino/esp32-sprinkler-queue
+    components: [sprinkler_queue]
+
+sprinkler_queue:
+  pause_between_valves:
+    initial_value: 5
+  # master_valve: omitted -> no master valve
+  valves:
+    - name: "Front lawn"
+      pin: { number: GPIO16, inverted: true }
+      initial_duration: 600
+    - name: "Back lawn"
+      pin: { number: GPIO17, inverted: true }
+      initial_duration: 600
+    - name: "Vegetables"
+      pin: { number: GPIO18, inverted: true }
+      initial_duration: 900
+    - name: "Roses"
+      pin: { number: GPIO19, inverted: true }
+      initial_duration: 300

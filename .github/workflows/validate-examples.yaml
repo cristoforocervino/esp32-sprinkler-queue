@@ -1,0 +1,81 @@
+name: Validate examples
+
+# Run `esphome config` against each YAML in examples/ to catch schema regressions.
+# The example files reference the component via `github://cristoforocervino/esp32-sprinkler-queue`,
+# but in CI we want to validate the local checkout — so the workflow patches the
+# external_components source to a local path before running esphome.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "components/**"
+      - "examples/**"
+      - ".github/workflows/validate-examples.yaml"
+  pull_request:
+    paths:
+      - "components/**"
+      - "examples/**"
+      - ".github/workflows/validate-examples.yaml"
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Validate ${{ matrix.example }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        example:
+          - direct-gpio-4-zones
+          - sn74hc595-16ch-board
+          - mcp23017-expander
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install ESPHome
+        run: pip install --upgrade -r requirements.txt
+
+      - name: Prepare validation workspace
+        # Copy the example into a separate dir so we can rewrite external_components
+        # to point at the local checkout without polluting the repo.
+        # Also drop a stub secrets.yaml so !secret references resolve.
+        run: |
+          mkdir -p ci-test
+          cp examples/${{ matrix.example }}.yaml ci-test/test.yaml
+          cat > ci-test/secrets.yaml <<'EOF'
+          wifi_ssid: "ci-stub"
+          wifi_password: "ci-stub-password"
+          ota_password: "ci-stub-password"
+          api_encryption_key: "+wwtL5mlhxa2a5wFGebZ2aepTDcUTj+0RUQVWIMTi4A="
+          EOF
+
+      - name: Patch external_components to use local checkout
+        run: |
+          python3 <<'PY'
+          import re, pathlib
+          path = pathlib.Path("ci-test/test.yaml")
+          src = path.read_text()
+          # Replace the github:// source with a local one. The local components
+          # directory lives one level up from ci-test/.
+          patched = re.sub(
+              r"external_components:\s*\n\s*-\s*source:\s*github://cristoforocervino/esp32-sprinkler-queue\s*\n\s*components:\s*\[sprinkler_queue\]",
+              "external_components:\n  - source:\n      type: local\n      path: ../components\n    components: [sprinkler_queue]",
+              src,
+          )
+          if patched == src:
+              raise SystemExit("ERROR: failed to patch external_components — did the example schema change?")
+          path.write_text(patched)
+          print("Patched external_components to local path.")
+          PY
+
+      - name: Run esphome config
+        working-directory: ci-test
+        run: esphome config test.yaml

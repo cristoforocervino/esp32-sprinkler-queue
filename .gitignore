@@ -1,0 +1,54 @@
+# ── JetBrains IDEs (PHPStorm, IntelliJ, PyCharm, ...) ────────────────────
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# ── VS Code (in case anyone opens the repo with it) ──────────────────────
+.vscode/
+*.code-workspace
+
+# ── macOS / Windows / Linux noise ────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ── Python (codegen artifacts inside components/) ───────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.python-version
+.venv/
+venv/
+env/
+
+# ── Node / Prettier (only present if running formatter locally) ─────────
+node_modules/
+package-lock.json
+.npm/
+
+# ── ESPHome build artifacts ─────────────────────────────────────────────
+# This repo ships a component, not a deployment, but contributors may
+# compile examples locally for testing — ignore the resulting build dir.
+.esphome/
+
+# ── Generic editor / temp files ─────────────────────────────────────────
+*.swp
+*.swo
+*~
+*.bak
+*.tmp
+*.log
+
+# ── Local secrets, never commit ─────────────────────────────────────────
+secrets.yaml
+.env
+.env.local
