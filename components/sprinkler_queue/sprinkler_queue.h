@@ -5,8 +5,10 @@
 #include "esphome/core/preferences.h"
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #include "esphome/components/number/number.h"
+#include "esphome/components/switch/switch.h"
 #include "esphome/components/valve/valve.h"
 
+#include <algorithm>
 #include <deque>
 #include <vector>
 
@@ -72,9 +74,32 @@ class ZoneNumber : public number::Number, public Component {
 
 // ─────────────────────────────────────────────────────────────
 // MasterBinarySensor — read-only state of the master valve relay.
-// ON whenever any zone is currently OPEN. OFF otherwise.
+// ON whenever the master pin is physically energised (either because
+// a zone is OPEN, or because the manual override switch is ON).
 // ─────────────────────────────────────────────────────────────
 class MasterBinarySensor : public binary_sensor::BinarySensor, public Component {};
+
+// ─────────────────────────────────────────────────────────────
+// MasterValveManualSwitch — optional HA switch that lets the user
+// open the master valve manually, independently of any zone.
+// Useful for debugging plumbing, pressure testing, system flushing.
+//
+// When ON: master pin is energised regardless of queue state.
+// When OFF: master pin follows the queue logic (open iff any zone OPEN).
+//
+// The switch boots OFF for safety (no `restore_value`) so a power cycle
+// never leaves the master open unattended.
+// ─────────────────────────────────────────────────────────────
+class SprinklerQueueController;  // forward declaration for set_parent()
+
+class MasterValveManualSwitch : public switch_::Switch, public Component {
+ public:
+  void set_parent(SprinklerQueueController *p) { parent_ = p; }
+
+ protected:
+  void write_state(bool state) override;
+  SprinklerQueueController *parent_{nullptr};
+};
 
 // ─────────────────────────────────────────────────────────────
 // PauseNumber — global pause between valves in seconds, persisted.
@@ -129,6 +154,7 @@ class SprinklerQueueController : public Component {
   // ── Master valve setters (optional — may stay nullptr) ────
   void set_master_pin(GPIOPin *pin) { master_pin_ = pin; }
   void set_master_binary_sensor(MasterBinarySensor *bs) { master_bs_ = bs; }
+  void set_master_manual_switch(MasterValveManualSwitch *sw) { master_manual_switch_ = sw; }
 
   // ── Pause number setter ──────────────────────────────────
   void set_pause_number(PauseNumber *num) { pause_num_ = num; }
@@ -141,6 +167,10 @@ class SprinklerQueueController : public Component {
   // open=false -> request closing (dequeue if PENDING, close if OPEN)
   void on_valve_command(uint8_t zone_idx, bool open);
 
+  // ── Called by MasterValveManualSwitch::write_state ────────
+  // Tracks the manual override state and refreshes the master pin.
+  void on_master_manual_changed(bool state);
+
  protected:
   // ── Queue management ──────────────────────────────────────
   void enqueue_zone(uint8_t idx);
@@ -152,10 +182,16 @@ class SprinklerQueueController : public Component {
   // ── Helpers ──────────────────────────────────────────────
   uint32_t pause_ms() const;
   uint32_t active_duration_ms() const;
+  bool any_zone_open_() const;
+  // Recomputes the desired master pin state from (manual switch OR any zone open)
+  // and writes it to master_pin_ + master_bs_. Cheap to call from any path.
+  void update_master_pin_();
 
   // ── Master valve (optional) ───────────────────────────────
   GPIOPin *master_pin_{nullptr};         // nullptr = no master valve
   MasterBinarySensor *master_bs_{nullptr};
+  MasterValveManualSwitch *master_manual_switch_{nullptr};  // nullptr = no manual override
+  bool master_manual_state_{false};      // cached state of the manual switch
 
   // ── Entities ─────────────────────────────────────────────
   std::vector<ZoneEntry> zones_;

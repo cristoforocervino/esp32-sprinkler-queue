@@ -18,7 +18,7 @@ are configured via the new setup_entity() helper which calls configure_entity_()
 
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.components import binary_sensor, number, valve
+from esphome.components import binary_sensor, number, switch, valve
 from esphome.components.number import NumberMode
 from esphome.const import (
     CONF_DISABLED_BY_DEFAULT,
@@ -33,13 +33,14 @@ from esphome import pins
 from esphome.core import CORE
 from esphome.core.entity_helpers import setup_entity
 
-AUTO_LOAD = ["binary_sensor", "number", "valve"]
+AUTO_LOAD = ["binary_sensor", "number", "switch", "valve"]
 CODEOWNERS = ["@cristoforocervino"]
 DOMAIN = "sprinkler_queue"
 
 # ── Custom config keys ─────────────────────────────────────────────────────
 CONF_PAUSE_BETWEEN_VALVES = "pause_between_valves"
 CONF_MASTER_VALVE = "master_valve"
+CONF_MANUAL_SWITCH = "manual_switch"
 CONF_VALVES = "valves"
 CONF_INITIAL_VALUE = "initial_value"
 CONF_INITIAL_DURATION = "initial_duration"
@@ -48,6 +49,7 @@ CONF_RESTORE_VALUE = "restore_value"
 # ── Default entity names (used when the user omits `name:`) ───────────────
 DEFAULT_NAME_PAUSE = "Pause between valves"
 DEFAULT_NAME_MASTER = "Master valve"
+DEFAULT_NAME_MASTER_MANUAL = "Master valve manual"
 DURATION_SUFFIX = "duration"
 
 # ── C++ namespace / class declarations ────────────────────────────────────
@@ -60,6 +62,9 @@ ZoneValve = sprinkler_queue_ns.class_("ZoneValve", valve.Valve, cg.Component)
 ZoneNumber = sprinkler_queue_ns.class_("ZoneNumber", number.Number, cg.Component)
 MasterBinarySensor = sprinkler_queue_ns.class_(
     "MasterBinarySensor", binary_sensor.BinarySensor, cg.Component
+)
+MasterValveManualSwitch = sprinkler_queue_ns.class_(
+    "MasterValveManualSwitch", switch.Switch, cg.Component
 )
 PauseNumber = sprinkler_queue_ns.class_("PauseNumber", number.Number, cg.Component)
 
@@ -79,12 +84,27 @@ PAUSE_NUMBER_SCHEMA = (
     .extend(cv.COMPONENT_SCHEMA)
 )
 
+# ── Master valve manual override switch (opt-in sub-block) ─────────────────
+# Presence of `manual_switch:` under `master_valve:` enables an HA switch entity
+# that lets the user open the master valve independently of any zone, for
+# debugging/flushing/pressure testing. The switch is OR'd with the queue: when
+# OFF, the master pin still follows queue logic normally.
+#
+# Always boots OFF (no restore_value) for safety — a power cycle never leaves
+# the master open unattended.
+MASTER_MANUAL_SWITCH_SCHEMA = switch.switch_schema(
+    MasterValveManualSwitch,
+    default_restore_mode="ALWAYS_OFF",
+    icon="mdi:wrench",
+).extend(cv.COMPONENT_SCHEMA)
+
 # ── Master valve sub-schema (optional block) ───────────────────────────────
 MASTER_VALVE_SCHEMA = cv.Schema(
     {
         cv.Optional(CONF_NAME): cv.string,  # default injected before validation
         cv.Optional(CONF_ICON, default="mdi:water-pump"): cv.icon,
         cv.Required(CONF_PIN): pins.gpio_output_pin_schema,
+        cv.Optional(CONF_MANUAL_SWITCH): MASTER_MANUAL_SWITCH_SCHEMA,
         cv.GenerateID(): cv.declare_id(MasterBinarySensor),
     }
 )
@@ -106,10 +126,10 @@ VALVE_SCHEMA = cv.Schema(
 def _inject_default_names(config):
     """Inject default names BEFORE schema validation runs.
 
-    The pause and master_valve sub-schemas use number_schema/entity_base
-    validators that require ``name:`` (or a manual ``id:``) to be present.
-    Users shouldn't have to spell out the name when the default is fine, so
-    we fill in the default here.
+    The pause / master_valve / manual_switch sub-schemas use number_schema /
+    switch_schema / entity_base validators that require ``name:`` (or a manual
+    ``id:``) to be present. Users shouldn't have to spell out the name when
+    the default is fine, so we fill in the default here.
 
     Explicit ``name:`` in YAML always wins (we only inject when missing).
     """
@@ -121,8 +141,13 @@ def _inject_default_names(config):
         pause_conf[CONF_NAME] = DEFAULT_NAME_PAUSE
 
     master_conf = config.get(CONF_MASTER_VALVE)
-    if isinstance(master_conf, dict) and CONF_NAME not in master_conf:
-        master_conf[CONF_NAME] = DEFAULT_NAME_MASTER
+    if isinstance(master_conf, dict):
+        if CONF_NAME not in master_conf:
+            master_conf[CONF_NAME] = DEFAULT_NAME_MASTER
+
+        manual_conf = master_conf.get(CONF_MANUAL_SWITCH)
+        if isinstance(manual_conf, dict) and CONF_NAME not in manual_conf:
+            manual_conf[CONF_NAME] = DEFAULT_NAME_MASTER_MANUAL
 
     return config
 
@@ -207,6 +232,13 @@ async def to_code(config):
             "binary_sensor",
         )
         cg.add(ctrl.set_master_binary_sensor(master_bs))
+
+        # ── Master manual override switch (optional) ─────────────────────
+        if CONF_MANUAL_SWITCH in master_conf:
+            manual_conf = master_conf[CONF_MANUAL_SWITCH]
+            manual_switch = await switch.new_switch(manual_conf)
+            cg.add(manual_switch.set_parent(ctrl))
+            cg.add(ctrl.set_master_manual_switch(manual_switch))
 
     # ── Per-zone entities ─────────────────────────────────────────────────
     for valve_conf in config[CONF_VALVES]:

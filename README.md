@@ -32,6 +32,7 @@ What I deliberately don't do: scheduling, repeats, multipliers, pump logic, part
 - **Per-valve max duration** — configurable via a HA `number.*` entity, persisted across reboots
 - **Inter-valve pause** — global pause between valves (also a `number.*`, persisted)
 - **Optional master valve** — auto-opened whenever any zone is active; omit the block if your setup doesn't need one
+- **Optional manual master override** — opt-in HA switch to open the master valve independently of any zone, for debugging, pressure testing, or pipe flushing
 
 ---
 
@@ -124,8 +125,41 @@ Omit the entire block if your setup doesn't have a master valve.
 | `name` | string | `Master valve` | HA display name |
 | `icon` | mdi icon | `mdi:water-pump` | HA icon for the binary_sensor |
 | `pin` | pin schema | required | Output pin controlling the master relay |
+| `manual_switch` | block (optional) | omitted | Adds an HA switch to open the master manually (see below) |
 
 When configured, the master pin is opened together with any zone and closed when no zone is active.
+
+#### `manual_switch` sub-block (optional)
+
+Opt-in HA switch entity that lets you open the master valve **independently** of any zone — useful for debugging plumbing, pressure-testing pipes, flushing, or commissioning a new installation. Omit the block to get the standard behavior (master pin follows zones only).
+
+```yaml
+master_valve:
+  pin: GPIO16
+  manual_switch:                       # presence of the block enables it
+    name: "Master valve manual"        # optional
+    icon: "mdi:wrench"                 # optional
+```
+
+Generates one extra entity: `switch.<device>_master_valve_manual`.
+
+**Behavior** (OR-logic with the queue):
+
+| Manual switch | Any zone open | Master pin |
+|---|---|---|
+| OFF | no | OFF |
+| OFF | yes | ON (normal irrigation) |
+| ON | no | **ON (debug mode)** |
+| ON | yes | ON |
+
+When you flip the switch OFF while a zone is still active, the master stays ON until the zone closes — the queue keeps full control as soon as the manual override releases it.
+
+**Safety**: the switch always boots **OFF** after a power cycle (no `restore_value`). A reboot will never leave the master open unattended.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | `Master valve manual` | HA display name |
+| `icon` | mdi icon | `mdi:wrench` | HA icon |
 
 ### Per-valve entries (`valves[*]`)
 

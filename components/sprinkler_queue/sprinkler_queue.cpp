@@ -91,6 +91,17 @@ void PauseNumber::dump_config() {
 }
 
 // ─────────────────────────────────────────────────────────────
+// MasterValveManualSwitch — forwards user toggles to the controller.
+// The controller does the actual master pin update; we just publish
+// our entity state so HA stays in sync.
+// ─────────────────────────────────────────────────────────────
+void MasterValveManualSwitch::write_state(bool state) {
+  this->publish_state(state);
+  if (parent_ != nullptr)
+    parent_->on_master_manual_changed(state);
+}
+
+// ─────────────────────────────────────────────────────────────
 // SprinklerQueueController — add_zone
 // ─────────────────────────────────────────────────────────────
 void SprinklerQueueController::add_zone(ZoneValve *valve, ZoneNumber *num, GPIOPin *pin) {
@@ -101,11 +112,9 @@ void SprinklerQueueController::add_zone(ZoneValve *valve, ZoneNumber *num, GPIOP
 // SprinklerQueueController — setup
 // ─────────────────────────────────────────────────────────────
 void SprinklerQueueController::setup() {
-  // Initialise master valve pin (if configured) and force closed
-  if (master_pin_ != nullptr) {
+  // Initialise master valve pin (if configured)
+  if (master_pin_ != nullptr)
     master_pin_->setup();
-    master_pin_->digital_write(false);
-  }
 
   // Initialise each zone pin and force closed
   for (auto &z : zones_) {
@@ -121,8 +130,9 @@ void SprinklerQueueController::setup() {
     set_zone_state(i, ZoneState::CLOSED);
   }
 
-  if (master_bs_ != nullptr)
-    master_bs_->publish_state(false);
+  // Master pin starts at the OR of (manual switch OFF) and (no zones open) = OFF.
+  // Routing through update_master_pin_() keeps a single source of truth.
+  update_master_pin_();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -223,17 +233,15 @@ void SprinklerQueueController::open_next_from_queue() {
   timer_start_ms_ = millis();
   fsm_ = FSMState::VALVE_OPEN;
 
-  // Open master first, then the zone (avoids back-pressure spike on the zone)
-  if (master_pin_ != nullptr)
-    master_pin_->digital_write(true);
+  // Open master first (via OR-logic), then the zone pin. Opening master before
+  // the zone avoids a short backpressure spike on the zone solenoid.
+  // After flipping the zone state to OPEN, update_master_pin_() sees any_zone_open_()
+  // == true and energises master_pin_ regardless of the manual switch state.
+  set_zone_state(idx, ZoneState::OPEN);
+  update_master_pin_();
 
   if (zones_[idx].pin != nullptr)
     zones_[idx].pin->digital_write(true);
-
-  set_zone_state(idx, ZoneState::OPEN);
-
-  if (master_bs_ != nullptr)
-    master_bs_->publish_state(true);
 
   ESP_LOGI(TAG, "Zone %d opened (duration=%.0fs)", idx + 1,
            active_duration_ms() / 1000.0f);
@@ -248,19 +256,15 @@ void SprinklerQueueController::close_active_valve(bool skip_pause) {
 
   uint8_t idx = (uint8_t) active_idx_;
 
-  // Close zone first, then master
+  // Close zone first, then re-evaluate master via OR-logic. If the manual
+  // override switch is ON, master stays energised; if OFF and no other zones
+  // are open, master closes.
   if (zones_[idx].pin != nullptr)
     zones_[idx].pin->digital_write(false);
 
-  if (master_pin_ != nullptr)
-    master_pin_->digital_write(false);
-
   set_zone_state(idx, ZoneState::CLOSED);
-
-  if (master_bs_ != nullptr)
-    master_bs_->publish_state(false);
-
   active_idx_ = -1;
+  update_master_pin_();
 
   uint32_t p = pause_ms();
   if (skip_pause || p == 0) {
@@ -321,6 +325,28 @@ uint32_t SprinklerQueueController::pause_ms() const {
   return (uint32_t)(secs * 1000.0f);
 }
 
+bool SprinklerQueueController::any_zone_open_() const {
+  return std::any_of(zones_.begin(), zones_.end(),
+                     [](const ZoneEntry &z) { return z.state == ZoneState::OPEN; });
+}
+
+void SprinklerQueueController::update_master_pin_() {
+  // Single source of truth: master is energised iff manual override is ON or
+  // any zone is currently OPEN.
+  bool should_open = master_manual_state_ || any_zone_open_();
+
+  if (master_pin_ != nullptr)
+    master_pin_->digital_write(should_open);
+  if (master_bs_ != nullptr)
+    master_bs_->publish_state(should_open);
+}
+
+void SprinklerQueueController::on_master_manual_changed(bool state) {
+  master_manual_state_ = state;
+  ESP_LOGI(TAG, "Master manual override -> %s", state ? "ON" : "OFF");
+  update_master_pin_();
+}
+
 // ─────────────────────────────────────────────────────────────
 // dump_config
 // ─────────────────────────────────────────────────────────────
@@ -328,6 +354,8 @@ void SprinklerQueueController::dump_config() {
   ESP_LOGCONFIG(TAG, "Sprinkler Queue Controller:");
   ESP_LOGCONFIG(TAG, "  Zones: %d", (int) zones_.size());
   ESP_LOGCONFIG(TAG, "  Master valve: %s", master_pin_ ? "configured" : "none");
+  ESP_LOGCONFIG(TAG, "  Master manual switch: %s",
+                master_manual_switch_ ? "enabled" : "disabled");
 }
 
 }  // namespace sprinkler_queue
